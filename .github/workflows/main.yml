@@ -1,0 +1,206 @@
+name: Xiaomi 13 Kernel Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksu_version:
+        description: "KernelSU 版本 (分支名、Tag 或 commit hash)，留空使用最新稳定版"
+        required: false
+        type: string
+        default: ""
+      pull_kernel_src:
+        description: "是否拉取远程内核源码(否则使用缓存)"
+        required: false
+        type: boolean
+        default: false
+      better_net:
+        description: "是否开启 IPset 和网络功能增强配置"
+        required: false
+        type: boolean
+        default: true
+      baseband_guard:
+        description: "是否开启内核级基带保护"
+        required: true
+        type: boolean
+        default: false
+      adocker:
+        description: "是否开启 Docker 支持"
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Xiaomi 13 Kernel Build
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "none"
+      CCACHE_COMPRESS: "1"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_DIR: ${{ github.workspace }}/.ccache_xiaomi_13
+      CCACHE_MAXSIZE: "3G"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends libelf-dev tree dos2unix ccache bc bison flex libssl-dev
+
+      - name: Cache kernel source
+        id: kernel-src-cache
+        uses: actions/cache@v4
+        with:
+          path: kernel_source
+          key: kernel-src-lineage-23.2
+          restore-keys: kernel-src-lineage-23.2
+
+      - name: Cache ccache
+        id: ccache-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-xiaomi-13-v1
+          restore-keys: ccache-${{ runner.os }}-xiaomi-13-v1-
+
+      - name: Download Clang
+        run: |
+          mkdir -p prebuilts/clang/host/linux-x86
+          cd prebuilts/clang/host/linux-x86
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r510928.tar.gz
+          tar xzf clang-r510928.tar.gz
+          rm clang-r510928.tar.gz
+
+      - name: Download Kernel Build Tools
+        run: |
+          git clone --depth 1 https://android.googlesource.com/platform/prebuilts/kernel-build-tools -b main prebuilts/kernel-build-tools
+
+      - name: Clone LineageOS Kernel Source
+        if: ${{ inputs.pull_kernel_src || steps.kernel-src-cache.outputs.cache-hit != 'true' }}
+        run: |
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm8550 -b lineage-23.2 kernel_source
+
+      - name: Setup KSU
+        if: ${{ inputs.ksu_version }}
+        run: |
+          cd kernel_source
+          if [ -n "${{ inputs.ksu_version }}" ]; then
+            echo "[+] 安装指定版本的 KernelSU: ${{ inputs.ksu_version }}"
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ inputs.ksu_version }}
+          else
+            echo "[+] 安装最新稳定版的 KernelSU"
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          fi
+          cd KernelSU
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          COMMIT_DATE=$(git log -1 --format=%cd --date=short)
+          BRANCH_OR_TAG=$(git describe --tags 2>/dev/null || git branch --show-current)
+          echo "=== KernelSU Version Information ==="
+          echo "版本: $BRANCH_OR_TAG"
+          echo "Commit Hash: $COMMIT_HASH"
+          echo "Commit Date: $COMMIT_DATE"
+
+      - name: Add IPset and iptables extensions
+        if: ${{ inputs.better_net }}
+        run: |
+          cd kernel_source
+          {
+            echo "CONFIG_BPF_STREAM_PARSER=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y"
+            echo "CONFIG_NETFILTER_XT_SET=y"
+            echo "CONFIG_IP_SET=y"
+            echo "CONFIG_IP_SET_MAX=65534"
+            echo "CONFIG_IP_SET_BITMAP_IP=y"
+            echo "CONFIG_IP_SET_BITMAP_IPMAC=y"
+            echo "CONFIG_IP_SET_BITMAP_PORT=y"
+            echo "CONFIG_IP_SET_HASH_IP=y"
+            echo "CONFIG_IP_SET_HASH_IPMARK=y"
+            echo "CONFIG_IP_SET_HASH_IPPORT=y"
+            echo "CONFIG_IP_SET_HASH_IPPORTIP=y"
+            echo "CONFIG_IP_SET_HASH_IPPORTNET=y"
+            echo "CONFIG_IP_SET_HASH_IPMAC=y"
+            echo "CONFIG_IP_SET_HASH_MAC=y"
+            echo "CONFIG_IP_SET_HASH_NETPORTNET=y"
+            echo "CONFIG_IP_SET_HASH_NET=y"
+            echo "CONFIG_IP_SET_HASH_NETNET=y"
+            echo "CONFIG_IP_SET_HASH_NETPORT=y"
+            echo "CONFIG_IP_SET_HASH_NETIFACE=y"
+            echo "CONFIG_IP_SET_LIST_SET=y"
+            echo "CONFIG_IP6_NF_NAT=y"
+            echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y"
+            echo "CONFIG_NETFILTER_XT_TARGET_TPROXY=y"
+            echo "CONFIG_NETFILTER_XT_TARGET_REDIRECT=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_OWNER=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_MAC=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y"
+          } >> ./arch/arm64/configs/gki_defconfig
+
+      - name: Setup Baseband-guard
+        if: ${{ inputs.baseband_guard }}
+        run: |
+          cd kernel_source
+          curl -LSs "https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh" | bash
+          echo "CONFIG_BBG=y" >> ./arch/arm64/configs/gki_defconfig
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/lockdown/lockdown,baseband_guard/ } }' security/Kconfig
+
+      - name: Setup Docker
+        if: ${{ inputs.adocker }}
+        run: |
+          cp -rf docker kernel_source/
+          cd kernel_source/
+          sed -i "/endmenu/i\source \"docker/Kconfig\"" ./arch/arm64/Kconfig
+          echo "CONFIG_DOCKER=y" >> ./arch/arm64/configs/gki_defconfig
+
+      - name: Other tasks
+        run: |
+          cd kernel_source
+          # 跳过不必要操作，节省时间
+          echo "CONFIG_HEADERS_INSTALL=n" >> ./arch/arm64/configs/gki_defconfig
+          # 开启 O2 优化
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./arch/arm64/configs/gki_defconfig
+
+      - name: Build Kernel
+        run: |
+          cd kernel_source
+          export PATH="${GITHUB_WORKSPACE}/prebuilts/clang/host/linux-x86/clang-r510928/bin:${GITHUB_WORKSPACE}/prebuilts/kernel-build-tools/linux-x86/bin:${PATH}"
+          mkdir -p "${{ env.CCACHE_DIR }}"
+          ccache -M "${{ env.CCACHE_MAXSIZE }}"
+          ccache -z
+          echo "=== 构建前 CCache 状态 ==="
+          ccache -s
+          # 使用 kalama config (sm8550)
+          export BUILD_CONFIG=build.config.msm.kalama
+          ./build/build.sh
+          echo "=== 构建后 CCache 状态 ==="
+          ccache -s
+
+      - name: Make AnyKernel3
+        run: |
+          git clone https://github.com/Kernel-SU/AnyKernel3.git --depth=1
+          cp kernel_source/out/arch/arm64/boot/Image ./AnyKernel3/
+
+      - name: Upload AnyKernel3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Xiaomi13_AnyKernel3_ksu${{ inputs.ksu_version && format('_{0}', inputs.ksu_version) || '' }}${{ inputs.better_net && '_ipt' || '' }}${{ inputs.baseband_guard && '_bbg' || '' }}${{ inputs.adocker && '_docker' || '' }}
+          path: ./AnyKernel3/*
+
+      - name: Extract All Kernel Modules
+        run: |
+          mkdir -p ./all_modules
+          tree kernel_source/out/ > ./all_modules/tree.txt || true
+          cd kernel_source/out/
+          find . -name "*.ko" -exec cp --parents {} ../../../../all_modules/ \;
+
+      - name: Upload Modules Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-modules
+          path: ./all_modules/
+
+      - name: Force Save Ccache
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-xiaomi-13-v1-${{ github.run_id }}
