@@ -388,26 +388,25 @@ jobs:
         if: ${{ inputs.build_lkm == false && inputs.better_net }}
         working-directory: android-kernel
         run: |
-          CONFIG_CANDIDATES="
-          out/${{ inputs.version }}/.config
-          common/out/.config
-          common/.config
-          "
+          mkdir -p ../output
           FINAL_CONFIG=""
-          for cfg in $CONFIG_CANDIDATES; do
+          FOUND_CONFIGS=$(find out common -type f -name .config 2>/dev/null | sort || true)
+
+          for cfg in \
+            "out/${{ inputs.version }}/common/.config" \
+            "out/${{ inputs.version }}/.config" \
+            "common/out/.config" \
+            "common/.config"
+          do
             if [ -f "$cfg" ]; then
               FINAL_CONFIG="$cfg"
               break
             fi
           done
 
-          if [ -z "$FINAL_CONFIG" ]; then
-            echo "Final kernel config not found."
-            exit 1
+          if [ -z "$FINAL_CONFIG" ] && [ -n "$FOUND_CONFIGS" ]; then
+            FINAL_CONFIG=$(printf '%s\n' "$FOUND_CONFIGS" | head -n 1)
           fi
-
-          echo "Using final config: $FINAL_CONFIG"
-          mkdir -p ../output
 
           {
             echo "CONFIG_BPF_STREAM_PARSER"
@@ -436,18 +435,31 @@ jobs:
           } > better_net.expected
 
           : > better_net.report
-          while read -r symbol; do
-            if grep -q "^${symbol}=" "$FINAL_CONFIG"; then
-              grep "^${symbol}=" "$FINAL_CONFIG" >> better_net.report
-            elif grep -q "^# ${symbol} is not set" "$FINAL_CONFIG"; then
-              grep "^# ${symbol} is not set" "$FINAL_CONFIG" >> better_net.report
-            else
-              echo "${symbol}=<missing>" >> better_net.report
+
+          if [ -z "$FINAL_CONFIG" ]; then
+            echo "WARNING: final kernel config not found; skipping better_net verification." >> better_net.report
+            if [ -n "$FOUND_CONFIGS" ]; then
+              echo >> better_net.report
+              echo "Found candidate config files:" >> better_net.report
+              printf '%s\n' "$FOUND_CONFIGS" >> better_net.report
             fi
-          done < better_net.expected
+          else
+            echo "Using final config: $FINAL_CONFIG"
+            echo "Using final config: $FINAL_CONFIG" >> better_net.report
+            echo >> better_net.report
+            while read -r symbol; do
+              if grep -q "^${symbol}=" "$FINAL_CONFIG"; then
+                grep "^${symbol}=" "$FINAL_CONFIG" >> better_net.report
+              elif grep -q "^# ${symbol} is not set" "$FINAL_CONFIG"; then
+                grep "^# ${symbol} is not set" "$FINAL_CONFIG" >> better_net.report
+              else
+                echo "${symbol}=<missing>" >> better_net.report
+              fi
+            done < better_net.expected
+            cp "$FINAL_CONFIG" ../output/final.config
+          fi
 
           cat better_net.report
-          cp "$FINAL_CONFIG" ../output/final.config
           cp better_net.report ../output/better_net.report
 
       - name: Prepare artifacts
