@@ -44,6 +44,11 @@ on:
         required: false
         type: boolean
         default: true
+      adocker:
+        required: false
+        type: boolean
+        default: false
+        description: Enable Docker support (requires docker/ directory in repo)
       ksu_version:
         required: false
         type: string
@@ -224,6 +229,18 @@ jobs:
               echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y"
             } >> "$DEFCONFIG"
           fi
+
+      - name: Setup Docker
+        if: ${{ inputs.adocker }}
+        run: |
+          if [ ! -d "$GITHUB_WORKSPACE/docker" ]; then
+            echo "docker/ directory not found in repo root."
+            exit 1
+          fi
+          cp -rf "$GITHUB_WORKSPACE/docker" "$GITHUB_WORKSPACE/android-kernel/common/"
+          cd $GITHUB_WORKSPACE/android-kernel/common
+          sed -i "/endmenu/i\\source \\\"docker/Kconfig\\\"" ./arch/arm64/Kconfig
+          echo "CONFIG_DOCKER=y" >> ./arch/arm64/configs/gki_defconfig
 
       - name: Disable defconfig check
         run: |
