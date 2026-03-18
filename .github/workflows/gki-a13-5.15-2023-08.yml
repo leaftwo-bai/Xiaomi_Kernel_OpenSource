@@ -43,6 +43,7 @@ on:
       better_net:
         required: false
         type: boolean
+        description: Enable extra networking config.
         default: true
       adocker:
         required: false
@@ -52,8 +53,23 @@ on:
       ksu_version:
         required: false
         type: string
-        description: KernelSU version (branch, tag, or commit). Empty for latest.
+        description: KernelSU version (branch, tag, or commit). Empty for latest, but pinning is recommended for older kernel branches.
         default: ""
+      anykernel_repo:
+        required: false
+        type: string
+        description: AnyKernel3 repo to package the kernel with.
+        default: Kernel-SU/AnyKernel3
+      anykernel_ref:
+        required: false
+        type: string
+        description: AnyKernel3 branch, tag, or commit. Empty uses repo default branch.
+        default: ""
+      anykernel_image_name:
+        required: false
+        type: string
+        description: Kernel image filename expected by the AnyKernel3 repo.
+        default: Image
       runs_on:
         required: false
         type: string
@@ -368,6 +384,72 @@ jobs:
             fi
           fi
 
+      - name: Verify better_net config
+        if: ${{ inputs.build_lkm == false && inputs.better_net }}
+        working-directory: android-kernel
+        run: |
+          CONFIG_CANDIDATES="
+          out/${{ inputs.version }}/.config
+          common/out/.config
+          common/.config
+          "
+          FINAL_CONFIG=""
+          for cfg in $CONFIG_CANDIDATES; do
+            if [ -f "$cfg" ]; then
+              FINAL_CONFIG="$cfg"
+              break
+            fi
+          done
+
+          if [ -z "$FINAL_CONFIG" ]; then
+            echo "Final kernel config not found."
+            exit 1
+          fi
+
+          echo "Using final config: $FINAL_CONFIG"
+          mkdir -p ../output
+
+          {
+            echo "CONFIG_BPF_STREAM_PARSER"
+            echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE"
+            echo "CONFIG_NETFILTER_XT_SET"
+            echo "CONFIG_IP_SET"
+            echo "CONFIG_IP_SET_MAX"
+            echo "CONFIG_IP_SET_BITMAP_IP"
+            echo "CONFIG_IP_SET_BITMAP_IPMAC"
+            echo "CONFIG_IP_SET_BITMAP_PORT"
+            echo "CONFIG_IP_SET_HASH_IP"
+            echo "CONFIG_IP_SET_HASH_IPMARK"
+            echo "CONFIG_IP_SET_HASH_IPPORT"
+            echo "CONFIG_IP_SET_HASH_IPPORTIP"
+            echo "CONFIG_IP_SET_HASH_IPPORTNET"
+            echo "CONFIG_IP_SET_HASH_IPMAC"
+            echo "CONFIG_IP_SET_HASH_MAC"
+            echo "CONFIG_IP_SET_HASH_NETPORTNET"
+            echo "CONFIG_IP_SET_HASH_NET"
+            echo "CONFIG_IP_SET_HASH_NETNET"
+            echo "CONFIG_IP_SET_HASH_NETPORT"
+            echo "CONFIG_IP_SET_HASH_NETIFACE"
+            echo "CONFIG_IP_SET_LIST_SET"
+            echo "CONFIG_IP6_NF_NAT"
+            echo "CONFIG_IP6_NF_TARGET_MASQUERADE"
+          } > better_net.expected
+
+          : > better_net.report
+          while read -r symbol; do
+            if grep -q "^${symbol}=" "$FINAL_CONFIG"; then
+              grep "^${symbol}=" "$FINAL_CONFIG" >> better_net.report
+            elif grep -q "^# ${symbol} is not set" "$FINAL_CONFIG"; then
+              grep "^# ${symbol} is not set" "$FINAL_CONFIG" >> better_net.report
+            else
+              echo "${symbol}=<missing>" >> better_net.report
+            fi
+          done < better_net.expected
+
+          cat better_net.report
+          cp "$FINAL_CONFIG" ../output/final.config
+          cp better_net.report ../output/better_net.report
+
       - name: Prepare artifacts
         id: prepareArtifacts
         run: |
@@ -382,9 +464,24 @@ jobs:
           else
             cp $OUTDIR/Image ./output/
             cp $OUTDIR/Image.lz4 ./output/
-            git clone https://github.com/Kernel-SU/AnyKernel3
+            git clone https://github.com/${{ inputs.anykernel_repo }} AnyKernel3
+            if [ -n "${{ inputs.anykernel_ref }}" ]; then
+              cd AnyKernel3
+              git fetch --depth 1 origin "${{ inputs.anykernel_ref }}" || \
+                git fetch --depth 1 origin "refs/tags/${{ inputs.anykernel_ref }}" || \
+                git fetch --depth 1 origin "${{ inputs.anykernel_ref }}:refs/remotes/origin/${{ inputs.anykernel_ref }}" || \
+                git fetch --depth 1 origin
+              git checkout "${{ inputs.anykernel_ref }}"
+              cd ..
+            fi
             rm -rf ./AnyKernel3/.git
-            cp $OUTDIR/Image ./AnyKernel3/
+            cp $OUTDIR/Image ./AnyKernel3/${{ inputs.anykernel_image_name }}
+            (
+              cd AnyKernel3
+              zip -r9 ../output/AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}.zip * -x .git/*
+            )
+            sha256sum ./output/AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}.zip \
+              > ./output/AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}.zip.sha256
           fi
 
       - name: Upload Image and Image.gz
@@ -392,14 +489,20 @@ jobs:
         if: ${{ inputs.build_lkm == false }}
         with:
           name: Image-${{ inputs.version_name }}_${{ inputs.os_patch_level }}
-          path: ./output/*
+          path: |
+            ./output/Image
+            ./output/Image.lz4
+            ./output/final.config
+            ./output/better_net.report
 
-      - name: Upload AnyKernel3
+      - name: Upload AnyKernel3 ZIP
         if: ${{ inputs.build_lkm == false }}
         uses: actions/upload-artifact@v5
         with:
           name: AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}
-          path: ./AnyKernel3/*
+          path: |
+            ./output/AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}.zip
+            ./output/AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}.zip.sha256
 
       - name: Upload LKM
         uses: actions/upload-artifact@v5
