@@ -49,11 +49,16 @@ on:
         type: string
         description: KernelSU version (branch, tag, or commit). Empty for latest.
         default: ""
+      runs_on:
+        required: false
+        type: string
+        description: Runner label (e.g. ubuntu-22.04 or ubuntu-24.04)
+        default: ubuntu-22.04
 
 jobs:
   build:
     name: Build ${{ inputs.version_name }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
