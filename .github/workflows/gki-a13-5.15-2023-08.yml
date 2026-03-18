@@ -488,12 +488,6 @@ jobs:
             fi
             rm -rf ./AnyKernel3/.git
             cp $OUTDIR/Image ./AnyKernel3/${{ inputs.anykernel_image_name }}
-            (
-              cd AnyKernel3
-              zip -r9 ../output/AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}.zip * -x .git/*
-            )
-            sha256sum ./output/AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}.zip \
-              > ./output/AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}.zip.sha256
           fi
 
       - name: Upload Image and Image.gz
@@ -507,14 +501,12 @@ jobs:
             ./output/final.config
             ./output/better_net.report
 
-      - name: Upload AnyKernel3 ZIP
+      - name: Upload AnyKernel3
         if: ${{ inputs.build_lkm == false }}
         uses: actions/upload-artifact@v5
         with:
           name: AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}
-          path: |
-            ./output/AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}.zip
-            ./output/AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}.zip.sha256
+          path: ./AnyKernel3/*
 
       - name: Upload LKM
         uses: actions/upload-artifact@v5
