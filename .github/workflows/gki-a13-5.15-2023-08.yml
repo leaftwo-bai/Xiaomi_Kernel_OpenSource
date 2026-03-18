@@ -1,4 +1,4 @@
-name: GKI Kernel Build (A13 5.15 2023-08-01)
+name: GKI Kernel Build (A13 5.15 2023-08)
 
 on:
   workflow_dispatch:
@@ -12,17 +12,17 @@ on:
         required: true
         type: string
         description: With SUBLEVEL of kernel (used for artifact naming)
-        default: android13-5.15-2023-08-01
+        default: android13-5.15-2023-08
       tag:
         required: true
         type: string
         description: Part of branch name of common kernel manifest
-        default: android13-5.15-2023-08-01
+        default: android13-5.15-2023-08
       os_patch_level:
         required: false
         type: string
         description: Patch level of common kernel manifest
-        default: 2023-08-01
+        default: 2023-08
       patch_path:
         required: false
         type: string
