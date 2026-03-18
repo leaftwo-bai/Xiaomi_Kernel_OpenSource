@@ -1,0 +1,16 @@
+
+menu "Docker Support"
+
+config DOCKER
+	bool "Enable Kernel Support for Docker"
+	default n
+	select PID_NS
+	select IPC_NS
+	select CGROUP_DEVICE
+	select BRIDGE_NETFILTER
+	select POSIX_MQUEUE
+	
+	help
+	  针对当前内核缺少的 Docker 特性进行补偿
+
+endmenu
