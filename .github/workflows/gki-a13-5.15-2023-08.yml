@@ -251,6 +251,16 @@ jobs:
             fi
           done
 
+      - name: Pin clang version (2023-08)
+        run: |
+          cd $GITHUB_WORKSPACE/android-kernel/common
+          if [ -f build.config.constants ]; then
+            sed -i -E 's/^CLANG_VERSION=.*/CLANG_VERSION=r450784e/' build.config.constants
+            echo "Pinned $(grep -n '^CLANG_VERSION=' build.config.constants)"
+          else
+            echo "build.config.constants not found, skipping clang pin."
+          fi
+
       - name: Symbol magic
         run: |
           echo "[+] Export all symbol from abi_gki_aarch64.xml"
@@ -332,6 +342,10 @@ jobs:
           fi
 
           rm common/android/abi_gki_protected_exports_* || echo "No protected exports!"
+          # Force clean localversion (avoid -dirty in UTS_RELEASE)
+          if [ -f common/scripts/setlocalversion ]; then
+            sed -i 's/-dirty//g' common/scripts/setlocalversion
+          fi
           git config --global user.email "bot@kernelsu.org"
           git config --global user.name "KernelSUBot"
           cd common/ && git add -A && git commit -a -m "Add KernelSU"
