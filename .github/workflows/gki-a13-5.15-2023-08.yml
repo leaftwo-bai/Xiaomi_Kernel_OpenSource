@@ -4,30 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        required: true
+        required: false
         type: string
-        description: Output directory of gki
-        default: android13-5.15
-      version_name:
-        required: true
-        type: string
-        description: With SUBLEVEL of kernel (used for artifact naming)
-        default: android13-5.15-2023-08
+        description: Output directory and artifact version. Empty derives from tag.
+        default: ""
       tag:
         required: true
         type: string
-        description: Part of branch name of common kernel manifest
+        description: Kernel manifest tag, for example android13-5.15-2023-08.
         default: android13-5.15-2023-08
       os_patch_level:
         required: false
         type: string
-        description: Patch level of common kernel manifest
-        default: 2023-08
-      patch_path:
-        required: false
-        type: string
-        description: Directory name of .github/patches/<patch_path>
-        default: 5.15
+        description: Artifact patch level. Empty derives from tag.
+        default: ""
       use_cache:
         required: false
         type: boolean
@@ -70,11 +60,6 @@ on:
         type: string
         description: Kernel image filename expected by the AnyKernel3 repo.
         default: Image
-      build_boot_images:
-        required: false
-        type: boolean
-        description: Build boot.img.gz artifacts using KernelSU's boot image packaging script.
-        default: false
       runs_on:
         required: false
         type: string
@@ -83,7 +68,7 @@ on:
 
 jobs:
   build:
-    name: Build ${{ inputs.version_name }}
+    name: Build ${{ inputs.tag }}
     runs-on: ${{ inputs.runs_on }}
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
@@ -142,14 +127,31 @@ jobs:
           echo "Commit Hash: $COMMIT_HASH"
           echo "Commit Date: $COMMIT_DATE"
 
-      - name: Setup need_upload
-        id: need_upload
+      - name: Derive build metadata
+        id: meta
         run: |
-          if [ ! -z "${{ secrets.BOT_TOKEN }}" ]; then
-            echo "UPLOAD=true" >> $GITHUB_OUTPUT
-          else
-            echo "UPLOAD=false" >> $GITHUB_OUTPUT
+          TAG="${{ inputs.tag }}"
+          VERSION="${{ inputs.version }}"
+          OS_PATCH_LEVEL="${{ inputs.os_patch_level }}"
+
+          if [ -z "$VERSION" ]; then
+            VERSION=$(printf '%s\n' "$TAG" | sed -E 's/-[0-9]{4}-[0-9]{2}$//')
           fi
+
+          if [ -z "$OS_PATCH_LEVEL" ]; then
+            OS_PATCH_LEVEL=$(printf '%s\n' "$TAG" | sed -nE 's/.*-([0-9]{4}-[0-9]{2})$/\1/p')
+          fi
+
+          if [ -z "$VERSION" ] || [ -z "$OS_PATCH_LEVEL" ]; then
+            echo "Failed to derive build metadata from tag: $TAG"
+            exit 1
+          fi
+
+          echo "Derived version: $VERSION"
+          echo "Derived os_patch_level: $OS_PATCH_LEVEL"
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "os_patch_level=$OS_PATCH_LEVEL" >> $GITHUB_OUTPUT
 
       - name: Setup kernel source
         run: |
@@ -188,7 +190,6 @@ jobs:
 
       - name: Setup KernelSU
         env:
-          PATCH_PATH: ${{ inputs.patch_path }}
           IS_DEBUG_KERNEL: ${{ inputs.debug }}
         run: |
           cd $GITHUB_WORKSPACE/android-kernel
@@ -301,7 +302,7 @@ jobs:
         if: inputs.use_cache == true
         uses: hendrikmuhs/ccache-action@v1
         with:
-          key: gki-kernel-aarch64-${{ inputs.version_name }}
+          key: gki-kernel-aarch64-${{ steps.meta.outputs.version }}
           max-size: 2G
           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
@@ -333,27 +334,6 @@ jobs:
             sed -i 's/needs unknown symbol/Dont abort when unknown symbol/g' build/kernel/*.sh || echo "No unknown symbol scripts found"
           fi
 
-      - name: Append ashmem exports if missing
-        if: startsWith(inputs.version, 'android16-6.12')
-        working-directory: android-kernel
-        run: |
-          FILE=common/drivers/staging/android/ashmem.c
-          if [[ -f "$FILE" ]] && ! grep -q 'is_ashmem_file' "$FILE"; then
-          cat >>"$FILE" <<'ASHMEM'
-
-          bool is_ashmem_file(struct file *file) { return false; }
-          int ashmem_area_name(struct file *file, char *name) { return 0; }
-          long ashmem_area_size(struct file *file) { return 0; }
-          struct file *ashmem_area_vmfile(struct file *file) { return NULL; }
-          EXPORT_SYMBOL_GPL(is_ashmem_file);
-          EXPORT_SYMBOL_GPL(ashmem_area_name);
-          EXPORT_SYMBOL_GPL(ashmem_area_size);
-          EXPORT_SYMBOL_GPL(ashmem_area_vmfile);
-          ASHMEM
-          fi
-
-          sed -i -E 's/\$\(CONFIG_ANDROID_BINDER_IPC_RUST\)/m/g' common/drivers/android/Makefile
-
       - name: Make working directory clean to avoid dirty
         working-directory: android-kernel
         run: |
@@ -382,11 +362,7 @@ jobs:
           if [ -e build/build.sh ]; then
             LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang"
           else
-            if [ "${{ inputs.version }}" == "android16-6.12" ]; then
-              tools/bazel run --disk_cache=/home/runner/.cache/bazel --config=fast --config=stamp --lto=thin //common:kernel_aarch64_dist -- --destdir=dist
-            else
-              tools/bazel run --disk_cache=/home/runner/.cache/bazel --config=fast --config=stamp --lto=thin //common:kernel_aarch64_dist -- --dist_dir=dist
-            fi
+            tools/bazel run --disk_cache=/home/runner/.cache/bazel --config=fast --config=stamp --lto=thin //common:kernel_aarch64_dist -- --dist_dir=dist
           fi
 
       - name: Verify better_net config
@@ -398,8 +374,8 @@ jobs:
           FOUND_CONFIGS=$(find out common -type f -name .config 2>/dev/null | sort || true)
 
           for cfg in \
-            "out/${{ inputs.version }}/common/.config" \
-            "out/${{ inputs.version }}/.config" \
+            "out/${{ steps.meta.outputs.version }}/common/.config" \
+            "out/${{ steps.meta.outputs.version }}/.config" \
             "common/out/.config" \
             "common/.config"
           do
@@ -470,17 +446,21 @@ jobs:
       - name: Prepare artifacts
         id: prepareArtifacts
         run: |
-          OUTDIR=android-kernel/out/${{ inputs.version }}/dist
+          OUTDIR=android-kernel/out/${{ steps.meta.outputs.version }}/dist
           if [ ! -e $OUTDIR ]; then
             OUTDIR=android-kernel/dist
           fi
           mkdir -p output
           if [ "${{ inputs.build_lkm}}" = "true" ]; then
             llvm-strip-15 -d $OUTDIR/kernelsu.ko
-            mv $OUTDIR/kernelsu.ko ./output/${{ inputs.version }}_kernelsu.ko
+            mv $OUTDIR/kernelsu.ko ./output/${{ steps.meta.outputs.version }}_kernelsu.ko
           else
             cp $OUTDIR/Image ./output/
-            cp $OUTDIR/Image.lz4 ./output/
+            if [ -f "$OUTDIR/Image.lz4" ]; then
+              cp $OUTDIR/Image.lz4 ./output/
+            else
+              echo "Image.lz4 not found, skipping copy."
+            fi
             git clone https://github.com/${{ inputs.anykernel_repo }} AnyKernel3
             if [ -n "${{ inputs.anykernel_ref }}" ]; then
               cd AnyKernel3
@@ -499,99 +479,22 @@ jobs:
         uses: actions/upload-artifact@v5
         if: ${{ inputs.build_lkm == false }}
         with:
-          name: Image-${{ inputs.version_name }}_${{ inputs.os_patch_level }}
+          name: Image-${{ steps.meta.outputs.version }}_${{ steps.meta.outputs.os_patch_level }}
           path: |
-            ./output/Image
-            ./output/Image.lz4
+            ./output/Image*
             ./output/final.config
-            ./output/better_net.report
+            ./output/*.report
 
       - name: Upload AnyKernel3
         if: ${{ inputs.build_lkm == false }}
         uses: actions/upload-artifact@v5
         with:
-          name: AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}
+          name: AnyKernel3-${{ steps.meta.outputs.version }}_${{ steps.meta.outputs.os_patch_level }}
           path: ./AnyKernel3/*
 
       - name: Upload LKM
         uses: actions/upload-artifact@v5
         if: ${{ inputs.build_lkm == true }}
         with:
-          name: ${{ inputs.version }}-lkm
+          name: ${{ steps.meta.outputs.version }}-lkm
           path: ./output/*_kernelsu.ko
-
-  build-boot-images:
-    name: Build boot.img.gz
-    needs: build
-    if: ${{ inputs.build_boot_images && inputs.build_lkm == false }}
-    runs-on: ${{ inputs.runs_on }}
-    steps:
-      - name: Download Image artifact
-        uses: actions/download-artifact@v6
-        with:
-          name: Image-${{ inputs.version_name }}_${{ inputs.os_patch_level }}
-          path: Image-${{ inputs.version_name }}_${{ inputs.os_patch_level }}
-
-      - name: Checkout KernelSU
-        run: |
-          git clone https://github.com/tiann/KernelSU.git KernelSU
-          if [ -n "${{ inputs.ksu_version }}" ]; then
-            cd KernelSU
-            git fetch origin "${{ inputs.ksu_version }}" || \
-              git fetch origin "refs/tags/${{ inputs.ksu_version }}" || \
-              git fetch origin "${{ inputs.ksu_version }}:refs/remotes/origin/${{ inputs.ksu_version }}"
-            git checkout "${{ inputs.ksu_version }}"
-          fi
-
-      - name: Download boot image tools
-        run: |
-          AOSP_MIRROR=https://android.googlesource.com
-          BRANCH=main-kernel-build-2024
-          git clone $AOSP_MIRROR/platform/prebuilts/build-tools -b $BRANCH --depth 1 build-tools
-          git clone $AOSP_MIRROR/kernel/prebuilts/build-tools -b $BRANCH --depth 1 kernel-build-tools
-          git clone $AOSP_MIRROR/platform/system/tools/mkbootimg -b $BRANCH --depth 1 mkbootimg
-          pip3 install telethon
-
-      - name: Set boot sign key
-        env:
-          BOOT_SIGN_KEY: ${{ secrets.BOOT_SIGN_KEY }}
-        run: |
-          if [ -n "$BOOT_SIGN_KEY" ]; then
-            echo "$BOOT_SIGN_KEY" > ./kernel-build-tools/linux-x86/share/avb/testkey_rsa2048.pem
-          fi
-
-      - name: Build boot images
-        run: |
-          if [ ! -f "$GITHUB_WORKSPACE/KernelSU/.github/scripts/build_a13.sh" ]; then
-            echo "KernelSU boot image script not found."
-            exit 1
-          fi
-
-          export AVBTOOL=$GITHUB_WORKSPACE/kernel-build-tools/linux-x86/bin/avbtool
-          export GZIP=$GITHUB_WORKSPACE/build-tools/path/linux-x86/gzip
-          export LZ4=$GITHUB_WORKSPACE/build-tools/path/linux-x86/lz4
-          export MKBOOTIMG=$GITHUB_WORKSPACE/mkbootimg/mkbootimg.py
-          export UNPACK_BOOTIMG=$GITHUB_WORKSPACE/mkbootimg/unpack_bootimg.py
-
-          cd $GITHUB_WORKSPACE/KernelSU
-          export VERSION=$(($(git rev-list --count HEAD) + 10200))
-          echo "VERSION: $VERSION"
-          cd $GITHUB_WORKSPACE
-
-          bash $GITHUB_WORKSPACE/KernelSU/.github/scripts/build_a13.sh
-
-      - name: Verify boot image outputs
-        run: |
-          find . -type f \( -name "*.img.gz" -o -name "*.img" \) | sort
-          if ! find . -type f -name "*.img.gz" | grep -q .; then
-            echo "No boot.img.gz artifacts were produced."
-            exit 1
-          fi
-
-      - name: Upload boot image artifacts
-        uses: actions/upload-artifact@v5
-        with:
-          name: boot-images-${{ inputs.version_name }}_${{ inputs.os_patch_level }}
-          path: |
-            Image-*/*.img.gz
-            Image-*/*.img
