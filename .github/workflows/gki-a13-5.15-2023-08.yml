@@ -70,6 +70,11 @@ on:
         type: string
         description: Kernel image filename expected by the AnyKernel3 repo.
         default: Image
+      build_boot_images:
+        required: false
+        type: boolean
+        description: Build boot.img.gz artifacts using KernelSU's boot image packaging script.
+        default: false
       runs_on:
         required: false
         type: string
@@ -514,3 +519,79 @@ jobs:
         with:
           name: ${{ inputs.version }}-lkm
           path: ./output/*_kernelsu.ko
+
+  build-boot-images:
+    name: Build boot.img.gz
+    needs: build
+    if: ${{ inputs.build_boot_images && inputs.build_lkm == false }}
+    runs-on: ${{ inputs.runs_on }}
+    steps:
+      - name: Download Image artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: Image-${{ inputs.version_name }}_${{ inputs.os_patch_level }}
+          path: Image-${{ inputs.version_name }}_${{ inputs.os_patch_level }}
+
+      - name: Checkout KernelSU
+        run: |
+          git clone https://github.com/tiann/KernelSU.git KernelSU
+          if [ -n "${{ inputs.ksu_version }}" ]; then
+            cd KernelSU
+            git fetch origin "${{ inputs.ksu_version }}" || \
+              git fetch origin "refs/tags/${{ inputs.ksu_version }}" || \
+              git fetch origin "${{ inputs.ksu_version }}:refs/remotes/origin/${{ inputs.ksu_version }}"
+            git checkout "${{ inputs.ksu_version }}"
+          fi
+
+      - name: Download boot image tools
+        run: |
+          AOSP_MIRROR=https://android.googlesource.com
+          BRANCH=main-kernel-build-2024
+          git clone $AOSP_MIRROR/platform/prebuilts/build-tools -b $BRANCH --depth 1 build-tools
+          git clone $AOSP_MIRROR/kernel/prebuilts/build-tools -b $BRANCH --depth 1 kernel-build-tools
+          git clone $AOSP_MIRROR/platform/system/tools/mkbootimg -b $BRANCH --depth 1 mkbootimg
+          pip3 install telethon
+
+      - name: Set boot sign key
+        env:
+          BOOT_SIGN_KEY: ${{ secrets.BOOT_SIGN_KEY }}
+        run: |
+          if [ -n "$BOOT_SIGN_KEY" ]; then
+            echo "$BOOT_SIGN_KEY" > ./kernel-build-tools/linux-x86/share/avb/testkey_rsa2048.pem
+          fi
+
+      - name: Build boot images
+        run: |
+          if [ ! -f "$GITHUB_WORKSPACE/KernelSU/.github/scripts/build_a13.sh" ]; then
+            echo "KernelSU boot image script not found."
+            exit 1
+          fi
+
+          export AVBTOOL=$GITHUB_WORKSPACE/kernel-build-tools/linux-x86/bin/avbtool
+          export GZIP=$GITHUB_WORKSPACE/build-tools/path/linux-x86/gzip
+          export LZ4=$GITHUB_WORKSPACE/build-tools/path/linux-x86/lz4
+          export MKBOOTIMG=$GITHUB_WORKSPACE/mkbootimg/mkbootimg.py
+          export UNPACK_BOOTIMG=$GITHUB_WORKSPACE/mkbootimg/unpack_bootimg.py
+
+          cd $GITHUB_WORKSPACE/KernelSU
+          export VERSION=$(($(git rev-list --count HEAD) + 10200))
+          echo "VERSION: $VERSION"
+          cd $GITHUB_WORKSPACE
+
+          bash $GITHUB_WORKSPACE/KernelSU/.github/scripts/build_a13.sh
+
+      - name: Verify boot image outputs
+        run: |
+          find . -type f \( -name "*.img.gz" -o -name "*.img" \) | sort
+          if ! find . -type f -name "*.img.gz" | grep -q .; then
+            echo "No boot.img.gz artifacts were produced."
+            exit 1
+          fi
+
+      - name: Upload boot image artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: boot-images-${{ inputs.version_name }}_${{ inputs.os_patch_level }}
+          path: |
+            Image-*/*.img.gz
+            Image-*/*.img
