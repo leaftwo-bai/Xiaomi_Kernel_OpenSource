@@ -176,29 +176,9 @@ jobs:
         with:
           path: |
             android-kernel/.repo
-            android-kernel/build
-            android-kernel/common
-            android-kernel/prebuilts
-            android-kernel/tools
-          key: gki-src-${{ inputs.tag }}
-          restore-keys: |
-            gki-src-
-
-      - name: Check cached source completeness
-        if: inputs.use_cache == true
-        id: kernel-src-check
-        run: |
-          cd $GITHUB_WORKSPACE/android-kernel
-          if [ -e build/build.sh ] || [ -e tools/bazel ]; then
-            echo "sync_required=false" >> $GITHUB_OUTPUT
-            echo "Cached source tree is complete enough for build."
-          else
-            echo "sync_required=true" >> $GITHUB_OUTPUT
-            echo "Cached source tree is incomplete; repo sync is required."
-          fi
+          key: gki-src-${{ runner.os }}-${{ inputs.tag }}
 
       - name: Repo sync
-        if: ${{ inputs.use_cache != true || steps.kernel-src-cache.outputs.cache-hit != 'true' || steps.kernel-src-check.outputs.sync_required == 'true' }}
         run: |
           cd $GITHUB_WORKSPACE/android-kernel
           repo --trace sync -c --force-sync --optimized-fetch --prune --no-tags --no-clone-bundle -j$(nproc --all)
@@ -277,8 +257,12 @@ jobs:
           fi
           cp -rf "$GITHUB_WORKSPACE/docker" "$GITHUB_WORKSPACE/android-kernel/common/"
           cd $GITHUB_WORKSPACE/android-kernel/common
-          sed -i "/endmenu/i\\source \\\"docker/Kconfig\\\"" ./arch/arm64/Kconfig
-          echo "CONFIG_DOCKER=y" >> ./arch/arm64/configs/gki_defconfig
+          if ! grep -q 'source "docker/Kconfig"' ./arch/arm64/Kconfig; then
+            sed -i "/endmenu/i\\source \\\"docker/Kconfig\\\"" ./arch/arm64/Kconfig
+          fi
+          if ! grep -q '^CONFIG_DOCKER=y$' ./arch/arm64/configs/gki_defconfig; then
+            echo "CONFIG_DOCKER=y" >> ./arch/arm64/configs/gki_defconfig
+          fi
 
       - name: Disable defconfig check
         run: |
